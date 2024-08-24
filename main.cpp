@@ -28,17 +28,17 @@
 #include <string.h>
 #include <vector>
 #include <map>
-#include "pico/stdlib.h"
 
+#include "pico/stdlib.h"
 #include "bsp/board_api.h"
 #include "tusb.h"
-
 #include "usb_descriptors.h"
 
 using std::vector;
-//--------------------------------------------------------------------+
-// MACRO CONSTANT TYPEDEF PROTYPES
-//--------------------------------------------------------------------+
+
+/** --------------------------------------------------------------------+ */
+/** MACRO CONSTANT TYPEDEF PROTYPES */
+/** --------------------------------------------------------------------+ */
 #define POLLING_INTERVAL_MS 5
 #define GPIO_PIN_SETTLE_DELAY_US 10
 #define FN_KEY 0xff
@@ -56,11 +56,8 @@ const vector<uint> colPins{10, 9, 8, 7, 6, 5, 16, 17, 18, 19, 20, 21,
  * looking at the keyboard face. */
 const vector<uint> rowPins{11, 12, 4, 14, 15};
 
-// keymap[col][row]
-// Note, The HID_KEY_NONE are padding. There are some places on the keyboard
-// where I skipped over a row while soldering, therefore when scanning
-// These ghost keys are needed otherwise we grab a random key from memory
-// (Accessing beyond the size of the row vector).
+/** keymap[col][row] */
+/** Note, The HID_KEY_NONE are padding for keys that dont actually exist. */
 const vector<vector<uint8_t>> keyMap{
     {HID_KEY_ESCAPE, HID_KEY_TAB, HID_KEY_CAPS_LOCK, HID_KEY_SHIFT_LEFT, HID_KEY_CONTROL_LEFT},
     {HID_KEY_1, HID_KEY_Q, HID_KEY_A, HID_KEY_NONE, HID_KEY_GUI_LEFT},
@@ -100,7 +97,7 @@ const std::map<uint8_t, uint8_t> fn_transforms{
 /*------------- MAIN -------------*/
 int main(void)
 {
-  // init the gpio pins
+  /** init the gpio pins and setting them up for input and output. */
   for (auto pin : colPins)
   {
     gpio_init(pin);
@@ -115,10 +112,10 @@ int main(void)
     gpio_pull_up(pin);
   }
 
-  // assuming this is related to stm32 stuff. idk tbh
+  /** assuming this is related to stm32 stuff. idk tbh */
   board_init();
 
-  // init device stack on configured roothub port
+  /** init device stack on configured roothub port */
   tud_init(BOARD_TUD_RHPORT);
   if (board_init_after_tusb)
   {
@@ -127,58 +124,56 @@ int main(void)
 
   while (1)
   {
-    tud_task(); // tinyusb device task
-    key_scan();
+    tud_task(); // tinyusb device task, needs to be called on a pico
+    key_scan(); // Scan the key matrix and send the report to the connected pc.
 
+    /** This is enforcing a delay between loops. If the time taken for
+     *  tud_task and key_scan is already greater than the time for the polling
+     *  interval then no busy waiting occurs */
     static uint32_t last_poll_time = 0;
     while (board_millis() - last_poll_time < POLLING_INTERVAL_MS);
     last_poll_time = board_millis();
   }
 }
 
-//--------------------------------------------------------------------+
-// Device callbacks
-//--------------------------------------------------------------------+
+/** --------------------------------------------------------------------+ */
+/** Device callbacks */
+/** --------------------------------------------------------------------+ */
+/** Invoked when device is mounted */
+void tud_mount_cb(void) {}
 
-// Invoked when device is mounted
-void tud_mount_cb(void)
-{
-}
+/** Invoked when device is unmounted */
+void tud_umount_cb(void) {}
 
-// Invoked when device is unmounted
-void tud_umount_cb(void)
-{
-}
-
-// Invoked when usb bus is suspended
-// remote_wakeup_en : if host allow us  to perform remote wakeup
-// Within 7ms, device must draw an average of current less than 2.5 mA from bus
+/** Invoked when usb bus is suspended */
+/** remote_wakeup_en : if host allow us to perform remote wakeup */
+/** Within 7ms, device must draw an average of current less than 2.5 mA from bus */
 void tud_suspend_cb(bool remote_wakeup_en)
 {
   (void)remote_wakeup_en;
 }
 
-// Invoked when usb bus is resumed
-void tud_resume_cb(void)
-{
-}
+/** Invoked when usb bus is resumed */
+void tud_resume_cb(void) {}
 
-//--------------------------------------------------------------------+
-// USB HID
-//--------------------------------------------------------------------+
-
+/** --------------------------------------------------------------------+ */
+/** USB HID */
+/** --------------------------------------------------------------------+ */
 void key_scan(void)
 {
-  // Remote wakeup
+  /** Remote wakeup */
   if (tud_suspended())
   {
-    uint32_t const btn = board_button_read();
-    // Wake up host if we are in suspend mode
-    // and REMOTE_WAKEUP feature is enabled by host
-    if (btn)
+    /** Originally this was done using the boot select button on the pico 
+     * but I don't want to open the keyboard to press the button so I'm
+     * just going to only scan the Esc key. */
+    gpio_put(colPins[0], LOW);
+    sleep_us(GPIO_PIN_SETTLE_DELAY_US);
+    if (gpio_get(rowPins[0]) == LOW)
     {
       tud_remote_wakeup();
     }
+    gpio_put(colPins[0], HIGH);
   }
   else
   {
@@ -192,14 +187,17 @@ void key_scan(void)
     uint8_t held_keys[6] = {HID_KEY_NONE, HID_KEY_NONE, HID_KEY_NONE,
                             HID_KEY_NONE, HID_KEY_NONE, HID_KEY_NONE};
 
-    /* Now we can do the scanning. Set the column being scanned to LOW
+    /** Now we can do the scanning. Set the column being scanned to LOW
      * and then check the rows to see if any are LOW. If they are, then
      * we know that the key at that row and column is pressed. */
     for (int col = 0; col < colPins.size(); col++)
     {
+      /** Pulling the column being scanned low */
       gpio_put(colPins[col], LOW);
       for (int row = 0; row < rowPins.size(); row++)
       {
+        /** We have to delay for some short time otherwise we will be trying to
+         * read the pin before it has settled. */
         sleep_us(GPIO_PIN_SETTLE_DELAY_US);
         if (gpio_get(rowPins[row]) == LOW)
         {
@@ -208,16 +206,24 @@ void key_scan(void)
 
           if (key == FN_KEY)
           {
+            /** As far as the pc is concerned the Fn key doesn't exist.
+             * Also Fn doesn't map to a real key, it a identifer I made.
+             * So continue to the next cycle.  */
             fn_key_held = true;
+            continue;
           }
 
-          // check if the key is a modifier key
+          /** check if the key is a modifier key */
           if (0xE0 <= key && key <= 0xE7)
           {
-            modifiers_held |= (1 << (key - 0xE0));
+            /** Modifier keys are controlled by a bit string and we can get the
+             * bit position by subtracting 0xE0 (value of left ctrl)
+             * from the key value. */
+            modifiers_held |= (1 << (key - HID_KEY_CONTROL_LEFT));
           }
-          // check if we have hit the key limit, if so break through the rest
-          // of the loop.
+          /** Check if we have hit the max number of key we can send in a single
+           *  report and if so we can just break through the rest of the
+           *  loops */
           if (key_index == 6)
           {
             break;
@@ -225,17 +231,16 @@ void key_scan(void)
           held_keys[key_index++] = key;
         }
       }
-      // setting the column we just scanned back to high
+      /** setting the column we just scanned back to high */
       gpio_put(colPins[col], HIGH);
     }
 
-    // used to track if we previously sent a key report
+    /** used to track if we previously sent a key report */
     static bool has_keyboard_key = false;
-
     if (any_key_held)
     {
-      // if the fn key is held down then check is there is a fn mapping for
-      // the key and if so overwrite it.
+      /** if the fn key is held down then go over all the keys being reported
+       * and overwrite them with the value in the fm map if it exists. */
       if (fn_key_held)
       {
         for (int i = 0; i < 6; i++)
@@ -251,7 +256,8 @@ void key_scan(void)
     }
     else
     {
-      // send empty key report if previously has key pressed
+      /** send empty key report if previously has key pressed and all keys have
+       * been released now */
       if (has_keyboard_key)
         tud_hid_keyboard_report(1, 0, NULL);
       has_keyboard_key = false;
@@ -259,41 +265,52 @@ void key_scan(void)
   }
 }
 
-// Invoked when received SET_REPORT control request or
-// received data on OUT endpoint ( Report ID = 0, Type = 0 )
-void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize)
+/** Invoked when received SET_REPORT control request or
+ * received data on OUT endpoint ( Report ID = 0, Type = 0 ) */
+void tud_hid_set_report_cb(
+    uint8_t instance,
+    uint8_t report_id,
+    hid_report_type_t report_type,
+    uint8_t const *buffer,
+    uint16_t bufsize)
 {
+  /** TODO add a led for the capslock key and update this function to 
+   * handle it */
   (void)instance;
 
   if (report_type == HID_REPORT_TYPE_OUTPUT)
   {
-    // Set keyboard LED e.g Capslock, Numlock etc...
+    /** Set keyboard LED e.g Capslock, Numlock etc... */
     if (report_id == 1)
     {
-      // bufsize should be (at least) 1
+      /** bufsize should be (at least) 1 */
       if (bufsize < 1)
         return;
 
       uint8_t const kbd_leds = buffer[0];
 
+      /** Turn on the on board light if caplock is active. */
       if (kbd_leds & KEYBOARD_LED_CAPSLOCK)
       {
-        // Capslock On: disable blink, turn led on
         board_led_write(true);
       }
       else
       {
-        // Caplocks Off: back to normal blink
         board_led_write(false);
       }
     }
   }
 }
 
-// Invoked when received GET_REPORT control request
-// Application must fill buffer report's content and return its length.
-// Return zero will cause the stack to STALL request
-uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t *buffer, uint16_t reqlen)
+/** Invoked when received GET_REPORT control request */
+/** Application must fill buffer report's content and return its length. */
+/** Return zero will cause the stack to STALL request */
+uint16_t tud_hid_get_report_cb(
+    uint8_t instance,
+    uint8_t report_id,
+    hid_report_type_t report_type,
+    uint8_t *buffer,
+    uint16_t reqlen)
 {
   (void)instance;
   (void)report_id;
