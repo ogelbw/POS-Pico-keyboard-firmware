@@ -92,6 +92,7 @@ const std::map<uint8_t, uint8_t> fn_transforms{
     {HID_KEY_S, HID_KEY_ARROW_DOWN},
     {HID_KEY_A, HID_KEY_ARROW_LEFT},
     {HID_KEY_D, HID_KEY_ARROW_RIGHT},
+    {HID_KEY_APPLICATION, HID_KEY_DELETE},
 };
 
 /*------------- MAIN -------------*/
