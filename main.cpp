@@ -49,7 +49,7 @@ void key_scan(void);
 
 /** The pins connected to each column of the key matrix. Left to right when
  * looking at the keyboard face. */
-const vector<uint> colPins{10, 9, 8, 7, 6, 5, 16, 17, 18, 19, 20, 21,
+const vector<uint> colPins{10, 9, 8, 7, 6, 5, 16, 26, 18, 19, 20, 21,
                            22, 27, 28};
 
 /** The pins connected to each row of the key matrix. From top to bottom when
@@ -112,6 +112,10 @@ int main(void)
     gpio_set_dir(pin, GPIO_IN);
     gpio_pull_up(pin);
   }
+
+  // led for capslock
+  gpio_init(3);
+  gpio_set_dir(3, GPIO_OUT);
 
   /** assuming this is related to stm32 stuff. idk tbh */
   board_init();
@@ -275,8 +279,6 @@ void tud_hid_set_report_cb(
     uint8_t const *buffer,
     uint16_t bufsize)
 {
-  /** TODO add a led for the capslock key and update this function to 
-   * handle it */
   (void)instance;
 
   if (report_type == HID_REPORT_TYPE_OUTPUT)
@@ -294,10 +296,12 @@ void tud_hid_set_report_cb(
       if (kbd_leds & KEYBOARD_LED_CAPSLOCK)
       {
         board_led_write(true);
+        gpio_put(3, HIGH);
       }
       else
       {
         board_led_write(false);
+        gpio_put(3, LOW);
       }
     }
   }
