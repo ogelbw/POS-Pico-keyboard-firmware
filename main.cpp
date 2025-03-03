@@ -50,6 +50,9 @@ using std::vector;
 #define MODIFIER_KEY_LOWER 0xE0
 #define MODIFIER_KEY_UPPER 0xE7
 #define GPIO_PIN_SETTLE_DELAY_US 10
+
+// May seem large but there is delay due to bad soldering and lingering presses
+#define BAD_KEY_DEBOUNCE_DELAY_US 1000*100
 #endif//POS_MACRO
 
 void key_scan(void);
@@ -105,6 +108,10 @@ const std::map<uint8_t, uint8_t> fn_transforms{
     {HID_KEY_P, HID_USAGE_CONSUMER_PLAY_PAUSE},
 };
 
+/** These are keys that sometimes double press due to bad soldering */
+const vector<uint8_t> broken_keys{HID_KEY_H, HID_KEY_2, HID_KEY_T};
+std::map<uint8_t, uint32_t> last_bad_key_press;
+
 /*------------- MAIN -------------*/
 int main(void)
 {
@@ -134,6 +141,12 @@ int main(void)
   if (board_init_after_tusb)
   {
     board_init_after_tusb();
+  }
+
+  /** init the last bad key press map */
+  for (auto key : broken_keys)
+  {
+    last_bad_key_press[key] = 0;
   }
 
   while (1)
@@ -184,6 +197,13 @@ void key_scan(void)
     if (gpio_get(rowPins[0]) == LOW)
     {
       tud_remote_wakeup();
+
+      /* The timer may have wrapped over so just reset the last presses to be 
+      sure. */
+      for (auto key : broken_keys)
+      {
+        last_bad_key_press[key] = 0;
+      }
     }
     gpio_put(colPins[0], HIGH);
   }
@@ -199,6 +219,25 @@ void key_scan(void)
     uint8_t heldKeys[6] = {HID_KEY_NONE, HID_KEY_NONE, HID_KEY_NONE,
                             HID_KEY_NONE, HID_KEY_NONE, HID_KEY_NONE};
 
+    /** Before scanning check if any of the bad keys have been pressed in the 
+     * past period and if so preemptively add them to the report. */
+    for (auto key : broken_keys)
+    {
+      auto now = time_us_32();
+      /* Handle the case when the time wraps over, set the last key presses to 0 
+      and wait for the debounce delay to pass before checking again. */
+      if (now < BAD_KEY_DEBOUNCE_DELAY_US) {
+        last_bad_key_press[key] = 0;
+        continue;
+      }
+
+      if ((now - last_bad_key_press.at(key)) < BAD_KEY_DEBOUNCE_DELAY_US)
+      {
+        heldKeys[keyIndex++] = key;
+        anyKeyHeld = true;
+      }
+    }
+
     /** Now we can do the scanning. Set the column being scanned to LOW
      * and then check the rows to see if any are LOW. If they are, then
      * we know that the key at that row and column is pressed. */
@@ -213,6 +252,10 @@ void key_scan(void)
         {
           uint8_t key = keyMap.at(col).at(row);
           anyKeyHeld = true;
+
+          if (last_bad_key_press.contains(key)){
+            last_bad_key_press[key] = time_us_32();
+          }
 
           if (key == FN_KEY)
           {
