@@ -59,20 +59,19 @@ void key_scan(void);
 
 /** The pins connected to each column of the key matrix. Left to right when
  * looking at the keyboard face. */
-const vector<uint> colPins{10, 9, 8, 7, 6, 5, 16, 26, 18, 19, 20, 21, 22, 27,
-                           28};
+const vector<uint> colPins{13, 12, 11, 10, 9, 8, 7, 21, 6, 5, 4, 3, 2, 1, 0};
 
 /** The pins connected to each row of the key matrix. From top to bottom when
  * looking at the keyboard face. */
-const vector<uint> rowPins{11, 12, 4, 14, 15};
+const vector<uint> rowPins{20, 19, 18, 17, 16};
 
 /** keymap[col][row] */
 /** Note, The HID_KEY_NONE are padding for keys that dont actually exist. */
 const vector<vector<uint8_t>> keyMap{
     {HID_KEY_ESCAPE, HID_KEY_TAB, HID_KEY_CAPS_LOCK, HID_KEY_SHIFT_LEFT, HID_KEY_CONTROL_LEFT},
     {HID_KEY_1, HID_KEY_Q, HID_KEY_A, HID_KEY_NONE, HID_KEY_GUI_LEFT},
-    {HID_KEY_2, HID_KEY_W, HID_KEY_S, HID_KEY_Z},
-    {HID_KEY_3, HID_KEY_E, HID_KEY_D, HID_KEY_X, HID_KEY_ALT_LEFT},
+    {HID_KEY_2, HID_KEY_W, HID_KEY_S, HID_KEY_Z, HID_KEY_ALT_LEFT},
+    {HID_KEY_3, HID_KEY_E, HID_KEY_D, HID_KEY_X},
     {HID_KEY_4, HID_KEY_R, HID_KEY_F, HID_KEY_C},
     {HID_KEY_5, HID_KEY_T, HID_KEY_G, HID_KEY_V},
     {HID_KEY_6, HID_KEY_Y, HID_KEY_H, HID_KEY_B, HID_KEY_SPACE},
@@ -98,10 +97,10 @@ const std::map<uint8_t, uint8_t> fn_transforms{
     {HID_KEY_0, HID_KEY_F10},
     {HID_KEY_MINUS, HID_KEY_F11},
     {HID_KEY_EQUAL, HID_KEY_F12},
-    {HID_KEY_W, HID_KEY_ARROW_UP},
-    {HID_KEY_S, HID_KEY_ARROW_DOWN},
-    {HID_KEY_A, HID_KEY_ARROW_LEFT},
-    {HID_KEY_D, HID_KEY_ARROW_RIGHT},
+    // {HID_KEY_W, HID_KEY_ARROW_UP},
+    // {HID_KEY_S, HID_KEY_ARROW_DOWN},
+    // {HID_KEY_A, HID_KEY_ARROW_LEFT},
+    // {HID_KEY_D, HID_KEY_ARROW_RIGHT},
     {HID_KEY_APPLICATION, HID_KEY_DELETE},
     {HID_KEY_BRACKET_LEFT, HID_USAGE_CONSUMER_SCAN_PREVIOUS},
     {HID_KEY_BRACKET_RIGHT, HID_USAGE_CONSUMER_SCAN_NEXT},
@@ -109,12 +108,15 @@ const std::map<uint8_t, uint8_t> fn_transforms{
 };
 
 /** These are keys that sometimes double press due to bad soldering */
-const vector<uint8_t> broken_keys{HID_KEY_H, HID_KEY_2, HID_KEY_T};
+const vector<uint8_t> broken_keys{};
 std::map<uint8_t, uint32_t> last_bad_key_press;
 
 /*------------- MAIN -------------*/
 int main(void)
 {
+  /** assuming this is related to stm32 stuff. idk tbh */
+  board_init();
+
   /** init the gpio pins and setting them up for input and output. */
   for (auto pin : colPins)
   {
@@ -133,9 +135,6 @@ int main(void)
   gpio_init(CAPSLOCK_LED);
   gpio_set_dir(CAPSLOCK_LED, GPIO_OUT);
 
-  /** assuming this is related to stm32 stuff. idk tbh */
-  board_init();
-
   /** init device stack on configured roothub port */
   tud_init(BOARD_TUD_RHPORT);
   if (board_init_after_tusb)
@@ -151,14 +150,14 @@ int main(void)
 
   while (1)
   {
-    uint32_t const start = time_us_32(); // for measuring the cycle time
-    tud_task(); // tinyusb device task, needs to be called on a pico
-    key_scan(); // Scan the key matrix and send the report to the connected pc.
+    static uint32_t start = time_us_32();
+    tud_task();
+    key_scan();
 
     /** This is enforcing a delay between loops. If the time taken for
      *  tud_task and key_scan is already greater than the time for the polling
      *  interval then no busy waiting occurs */
-    uint32_t const duration = time_us_32() - start;
+    static uint32_t duration = time_us_32() - start;
     if (duration < (POLLING_INTERVAL_MS * 1000))
       sleep_us((POLLING_INTERVAL_MS * 1000) - duration);
   }
