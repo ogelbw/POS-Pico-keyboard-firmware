@@ -108,7 +108,7 @@ const std::map<uint8_t, uint8_t> fn_transforms{
 };
 
 /** These are keys that sometimes double press due to bad soldering */
-const vector<uint8_t> broken_keys{};
+const vector<uint8_t> bad_keys{HID_KEY_B};
 std::map<uint8_t, uint32_t> last_bad_key_press;
 
 /*------------- MAIN -------------*/
@@ -143,7 +143,7 @@ int main(void)
   }
 
   /** init the last bad key press map */
-  for (auto key : broken_keys)
+  for (auto key : bad_keys)
   {
     last_bad_key_press[key] = 0;
   }
@@ -199,7 +199,7 @@ void key_scan(void)
 
       /* The timer may have wrapped over so just reset the last presses to be 
       sure. */
-      for (auto key : broken_keys)
+      for (auto key : bad_keys)
       {
         last_bad_key_press[key] = 0;
       }
@@ -220,7 +220,7 @@ void key_scan(void)
 
     /** Before scanning check if any of the bad keys have been pressed in the 
      * past period and if so preemptively add them to the report. */
-    for (auto key : broken_keys)
+    for (auto key : bad_keys)
     {
       auto now = time_us_32();
       /* Handle the case when the time wraps over, set the last key presses to 0 
