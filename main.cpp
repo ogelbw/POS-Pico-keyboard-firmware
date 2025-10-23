@@ -33,6 +33,7 @@
 #include "bsp/board_api.h"
 #include "tusb.h"
 #include "usb_descriptors.h"
+#include "hardware/watchdog.h"
 
 using std::vector;
 
@@ -50,6 +51,9 @@ using std::vector;
 #define MODIFIER_KEY_LOWER 0xE0
 #define MODIFIER_KEY_UPPER 0xE7
 #define GPIO_PIN_SETTLE_DELAY_US 10
+#define BOARD_LED_GPIO 25
+#define WATCHDOG_TIMEOUT 1000
+#define HID_KEEP_ALIVE_MS 500
 
 // May seem large but there is delay due to bad soldering and lingering presses
 #define BAD_KEY_DEBOUNCE_DELAY_US 1000*100
@@ -84,7 +88,7 @@ const vector<vector<uint8_t>> keyMap{
     {HID_KEY_PRINT_SCREEN, HID_KEY_SLASH, HID_KEY_ENTER, HID_KEY_ARROW_UP, HID_KEY_ARROW_DOWN},
     {HID_KEY_BACKSPACE, HID_KEY_BACKSLASH, HID_KEY_NONE, HID_KEY_APPLICATION, HID_KEY_ARROW_RIGHT}};
 
-const std::map<uint8_t, uint8_t> fn_transforms{
+const std::map<uint8_t, uint16_t> fn_transforms{
     {HID_KEY_1, HID_KEY_F1},
     {HID_KEY_2, HID_KEY_F2},
     {HID_KEY_3, HID_KEY_F3},
@@ -108,13 +112,15 @@ const std::map<uint8_t, uint8_t> fn_transforms{
 };
 
 /** These are keys that sometimes double press due to bad soldering */
-const vector<uint8_t> bad_keys{HID_KEY_B};
+const vector<uint8_t> bad_keys{HID_KEY_B, HID_KEY_ARROW_UP, HID_KEY_U, HID_KEY_N};
 std::map<uint8_t, uint32_t> last_bad_key_press;
 
 /*------------- MAIN -------------*/
 int main(void)
 {
-  /** assuming this is related to stm32 stuff. idk tbh */
+  watchdog_enable(WATCHDOG_TIMEOUT, false);
+
+  /** tinyusb init */
   board_init();
 
   /** init the gpio pins and setting them up for input and output. */
@@ -134,6 +140,8 @@ int main(void)
 
   gpio_init(CAPSLOCK_LED);
   gpio_set_dir(CAPSLOCK_LED, GPIO_OUT);
+  gpio_init(BOARD_LED_GPIO);
+  gpio_set_dir(BOARD_LED_GPIO, GPIO_OUT);
 
   /** init device stack on configured roothub port */
   tud_init(BOARD_TUD_RHPORT);
@@ -150,14 +158,17 @@ int main(void)
 
   while (1)
   {
-    static uint32_t start = time_us_32();
+    uint32_t start = time_us_32();
     tud_task();
     key_scan();
+
+    /* Kick the dog */
+    watchdog_update();
 
     /** This is enforcing a delay between loops. If the time taken for
      *  tud_task and key_scan is already greater than the time for the polling
      *  interval then no busy waiting occurs */
-    static uint32_t duration = time_us_32() - start;
+    uint32_t duration = time_us_32() - start;
     if (duration < (POLLING_INTERVAL_MS * 1000))
       sleep_us((POLLING_INTERVAL_MS * 1000) - duration);
   }
@@ -250,7 +261,7 @@ void key_scan(void)
         if (gpio_get(rowPins[row]) == LOW)
         {
           uint8_t key = keyMap.at(col).at(row);
-          anyKeyHeld = true;
+          anyKeyHeld = anyKeyHeld || (key != FN_KEY);
 
           if (last_bad_key_press.contains(key)){
             last_bad_key_press[key] = time_us_32();
@@ -276,8 +287,9 @@ void key_scan(void)
           heldKeys[keyIndex++] = key;
         }
       }
-      /** setting the column we just scanned back to high */
+      /** setting the column we just scanned back to high and let tud task run */
       gpio_put(colPins[col], HIGH);
+      tud_task();
     }
 
     /** used to track if we previously sent a key report */
@@ -292,20 +304,35 @@ void key_scan(void)
         {
           if (fn_transforms.contains(heldKeys[i]))
           {
-            heldKeys[i] = fn_transforms.at(heldKeys[i]);
-            if (heldKeys[i] == HID_USAGE_CONSUMER_SCAN_NEXT 
-                || heldKeys[i] == HID_USAGE_CONSUMER_SCAN_PREVIOUS)
+            const auto transformed = fn_transforms.at(heldKeys[i]);
+            if ( transformed == HID_USAGE_CONSUMER_SCAN_NEXT ||
+                 transformed == HID_USAGE_CONSUMER_SCAN_PREVIOUS ||
+                 transformed == HID_USAGE_CONSUMER_PLAY_PAUSE )
             {
-              uint16_t consumerKey = heldKeys[i];
-              for (int j = 0; j < 6; j++) heldKeys[j] = HID_KEY_NONE;
-              // send a consumer report instead of a keyboard report
-              uint8_t report[2] =
-              {
-                (uint8_t)(consumerKey & 0xff),
-                (uint8_t)((consumerKey >> 8) & 0xff)
+              static uint16_t previous_media_key_held = 0;
+              uint8_t report[2] = {
+                (uint8_t)(transformed & 0xFF),
+                (uint8_t)((transformed >> 8) & 0xFF)
               };
+
+              /* Immediately send a empty report to turn off the key
+              This will break some games detecting if media keys are being pressed
+              but if a key is doing that... no. */
               tud_hid_report(REPORT_ID_CONSUMER_CONTROL, report, sizeof(report));
+              hasKeyboardKey = true;
               break;
+            }
+            else
+            {
+              heldKeys[i] = (uint8_t)transformed;
+            }
+          }
+          else
+          {
+            /* Manual reboot button on Fn+Esc */
+            if (heldKeys[i] == HID_KEY_ESCAPE)
+            {
+              watchdog_reboot(0,0,0);
             }
           }
         }
@@ -321,6 +348,9 @@ void key_scan(void)
       {
         tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, NULL);
         uint8_t empty_report[2] = { 0x00, 0x00 };
+        while(!tud_hid_ready()){
+          tud_task();
+        }
         tud_hid_report(REPORT_ID_CONSUMER_CONTROL, empty_report, sizeof(empty_report));
       }
       hasKeyboardKey = false;
@@ -347,17 +377,19 @@ void tud_hid_set_report_cb(
       if (bufsize < 1)
         return;
 
-      uint8_t const kbd_leds = buffer[0];
-
+        uint8_t const kbd_leds = buffer[0];
+        
       /** Turn on the on board light if caplock is active. */
       if (kbd_leds & KEYBOARD_LED_CAPSLOCK)
       {
-        board_led_write(true);
+        // board_led_write(true);
+        gpio_put(BOARD_LED_GPIO, HIGH);
         gpio_put(CAPSLOCK_LED, HIGH);
       }
       else
       {
-        board_led_write(false);
+        // board_led_write(false);
+        gpio_put(BOARD_LED_GPIO, LOW);
         gpio_put(CAPSLOCK_LED, LOW);
       }
     }
