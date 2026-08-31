@@ -42,6 +42,9 @@ add_executable(Pico_keyboard_firmware)
 target_sources(Pico_keyboard_firmware PUBLIC
         ${CMAKE_CURRENT_LIST_DIR}/main.cpp
         ${CMAKE_CURRENT_LIST_DIR}/usb_descriptors.c
+        ${CMAKE_CURRENT_LIST_DIR}/kb/keymap.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/kb/pacing.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/kb/report_builder.cpp
         )
 
 # Make sure TinyUSB can find tusb_config.h

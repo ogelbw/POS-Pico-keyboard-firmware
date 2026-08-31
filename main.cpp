@@ -23,96 +23,40 @@
  *
  */
 
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <vector>
 #include <map>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-#include "pico/stdlib.h"
 #include "bsp/board_api.h"
+#include "hardware/watchdog.h"
+#include "pico/stdlib.h"
 #include "tusb.h"
 #include "usb_descriptors.h"
-#include "hardware/watchdog.h"
 
-using std::vector;
+#include "kb/pacing.h"
+#include "kb/report_builder.h"
 
 /** --------------------------------------------------------------------+ */
 /** MACRO CONSTANT */
 /** --------------------------------------------------------------------+ */
 
-#ifndef POS_MACRO
-#define POS_MACRO
 #define LOW 0
 #define HIGH 1
-#define FN_KEY 0xff
 #define CAPSLOCK_LED 3
 #define POLLING_INTERVAL_MS 5
-#define MODIFIER_KEY_LOWER 0xE0
-#define MODIFIER_KEY_UPPER 0xE7
 #define GPIO_PIN_SETTLE_DELAY_US 10
 #define BOARD_LED_GPIO 25
 #define WATCHDOG_TIMEOUT 1000
-#define HID_KEEP_ALIVE_MS 500
+#define HID_FLUSH_TIMEOUT_US (50 * 1000)
 
 // May seem large but there is delay due to bad soldering and lingering presses
-#define BAD_KEY_DEBOUNCE_DELAY_US 1000*100
-#endif//POS_MACRO
+#define BAD_KEY_DEBOUNCE_DELAY_US 1000 * 100
 
 void key_scan(void);
 
-/** The pins connected to each column of the key matrix. Left to right when
- * looking at the keyboard face. */
-const vector<uint> colPins{13, 12, 11, 10, 9, 8, 7, 21, 6, 5, 4, 3, 2, 1, 0};
-
-/** The pins connected to each row of the key matrix. From top to bottom when
- * looking at the keyboard face. */
-const vector<uint> rowPins{20, 19, 18, 17, 16};
-
-/** keymap[col][row] */
-/** Note, The HID_KEY_NONE are padding for keys that dont actually exist. */
-const vector<vector<uint8_t>> keyMap{
-    {HID_KEY_ESCAPE, HID_KEY_TAB, HID_KEY_CAPS_LOCK, HID_KEY_SHIFT_LEFT, HID_KEY_CONTROL_LEFT},
-    {HID_KEY_1, HID_KEY_Q, HID_KEY_A, HID_KEY_NONE, HID_KEY_GUI_LEFT},
-    {HID_KEY_2, HID_KEY_W, HID_KEY_S, HID_KEY_Z, HID_KEY_ALT_LEFT},
-    {HID_KEY_3, HID_KEY_E, HID_KEY_D, HID_KEY_X},
-    {HID_KEY_4, HID_KEY_R, HID_KEY_F, HID_KEY_C},
-    {HID_KEY_5, HID_KEY_T, HID_KEY_G, HID_KEY_V},
-    {HID_KEY_6, HID_KEY_Y, HID_KEY_H, HID_KEY_B, HID_KEY_SPACE},
-    {HID_KEY_7, HID_KEY_U, HID_KEY_J, HID_KEY_N},
-    {HID_KEY_8, HID_KEY_I, HID_KEY_K, HID_KEY_M},
-    {HID_KEY_9, HID_KEY_O, HID_KEY_L, HID_KEY_COMMA},
-    {HID_KEY_0, HID_KEY_P, HID_KEY_SEMICOLON, HID_KEY_PERIOD, HID_KEY_ALT_RIGHT},
-    {HID_KEY_MINUS, HID_KEY_BRACKET_LEFT, HID_KEY_APOSTROPHE, HID_KEY_SHIFT_RIGHT, FN_KEY},
-    {HID_KEY_EQUAL, HID_KEY_BRACKET_RIGHT, HID_KEY_GRAVE, HID_KEY_NONE, HID_KEY_ARROW_LEFT},
-    {HID_KEY_PRINT_SCREEN, HID_KEY_SLASH, HID_KEY_ENTER, HID_KEY_ARROW_UP, HID_KEY_ARROW_DOWN},
-    {HID_KEY_BACKSPACE, HID_KEY_BACKSLASH, HID_KEY_NONE, HID_KEY_APPLICATION, HID_KEY_ARROW_RIGHT}};
-
-const std::map<uint8_t, uint16_t> fn_transforms{
-    {HID_KEY_1, HID_KEY_F1},
-    {HID_KEY_2, HID_KEY_F2},
-    {HID_KEY_3, HID_KEY_F3},
-    {HID_KEY_4, HID_KEY_F4},
-    {HID_KEY_5, HID_KEY_F5},
-    {HID_KEY_6, HID_KEY_F6},
-    {HID_KEY_7, HID_KEY_F7},
-    {HID_KEY_8, HID_KEY_F8},
-    {HID_KEY_9, HID_KEY_F9},
-    {HID_KEY_0, HID_KEY_F10},
-    {HID_KEY_MINUS, HID_KEY_F11},
-    {HID_KEY_EQUAL, HID_KEY_F12},
-    // {HID_KEY_W, HID_KEY_ARROW_UP},
-    // {HID_KEY_S, HID_KEY_ARROW_DOWN},
-    // {HID_KEY_A, HID_KEY_ARROW_LEFT},
-    // {HID_KEY_D, HID_KEY_ARROW_RIGHT},
-    {HID_KEY_APPLICATION, HID_KEY_DELETE},
-    {HID_KEY_BRACKET_LEFT, HID_USAGE_CONSUMER_SCAN_PREVIOUS},
-    {HID_KEY_BRACKET_RIGHT, HID_USAGE_CONSUMER_SCAN_NEXT},
-    {HID_KEY_P, HID_USAGE_CONSUMER_PLAY_PAUSE},
-};
-
-/** These are keys that sometimes double press due to bad soldering */
-const vector<uint8_t> bad_keys{HID_KEY_B, HID_KEY_ARROW_UP, HID_KEY_U, HID_KEY_N};
+/** Timestamp of the last press for each bad key. Guards against the timer
+ *  wrapping over by resetting the stamp to 0 right after the wrap. */
 std::map<uint8_t, uint32_t> last_bad_key_press;
 
 /*------------- MAIN -------------*/
@@ -124,14 +68,14 @@ int main(void)
   board_init();
 
   /** init the gpio pins and setting them up for input and output. */
-  for (auto pin : colPins)
+  for (auto pin : kb::colPins)
   {
     gpio_init(pin);
     gpio_set_dir(pin, GPIO_OUT);
     gpio_put(pin, HIGH);
   }
 
-  for (auto pin : rowPins)
+  for (auto pin : kb::rowPins)
   {
     gpio_init(pin);
     gpio_set_dir(pin, GPIO_IN);
@@ -151,7 +95,7 @@ int main(void)
   }
 
   /** init the last bad key press map */
-  for (auto key : bad_keys)
+  for (auto key : kb::bad_keys)
   {
     last_bad_key_press[key] = 0;
   }
@@ -165,12 +109,13 @@ int main(void)
     /* Kick the dog */
     watchdog_update();
 
-    /** This is enforcing a delay between loops. If the time taken for
-     *  tud_task and key_scan is already greater than the time for the polling
-     *  interval then no busy waiting occurs */
-    uint32_t duration = time_us_32() - start;
-    if (duration < (POLLING_INTERVAL_MS * 1000))
-      sleep_us((POLLING_INTERVAL_MS * 1000) - duration);
+    /** Enforce the polling cadence. pacing_sleep_us() clamps the result so a
+     *  scan that overran the interval (or an iteration straddling the 32-bit
+     *  timer wrap) never sleeps for a near-2^32 us span and trips the
+     *  watchdog. */
+    uint32_t pause = kb::pacing_sleep_us(start, time_us_32(), POLLING_INTERVAL_MS * 1000);
+    if (pause)
+      sleep_us(pause);
   }
 }
 
@@ -197,161 +142,128 @@ void tud_resume_cb(void) {}
 /** --------------------------------------------------------------------+ */
 /** USB HID */
 /** --------------------------------------------------------------------+ */
+
+/** Sends the consumer empty report, waiting up to HID_FLUSH_TIMEOUT_US for the
+ *  endpoint to accept. Kicks the watchdog while waiting so an unresponsive
+ *  host stalls a key release, never the whole board. */
+static void flush_empty_consumer_report(void)
+{
+  uint32_t deadline = time_us_32() + HID_FLUSH_TIMEOUT_US;
+  while (!tud_hid_ready())
+  {
+    tud_task();
+    watchdog_update();
+    if (time_us_32() >= deadline)
+      break;
+  }
+
+  uint8_t empty_report[2] = {0x00, 0x00};
+  tud_hid_report(REPORT_ID_CONSUMER_CONTROL, empty_report, sizeof(empty_report));
+}
+
 void key_scan(void)
 {
   /** Remote wakeup */
   if (tud_suspended())
   {
-    gpio_put(colPins[0], LOW);
+    gpio_put(kb::colPins[0], LOW);
     sleep_us(GPIO_PIN_SETTLE_DELAY_US);
-    if (gpio_get(rowPins[0]) == LOW)
+    if (gpio_get(kb::rowPins[0]) == LOW)
     {
       tud_remote_wakeup();
 
-      /* The timer may have wrapped over so just reset the last presses to be 
-      sure. */
-      for (auto key : bad_keys)
+      /* The timer may have wrapped over so just reset the last presses to be
+       * sure. */
+      for (auto key : kb::bad_keys)
       {
         last_bad_key_press[key] = 0;
       }
     }
-    gpio_put(colPins[0], HIGH);
+    gpio_put(kb::colPins[0], HIGH);
   }
   else
   {
     if (!tud_hid_ready())
       return;
 
-    bool fnKeyHeld = false;
-    bool anyKeyHeld = false;
-    uint8_t modifiers_held = 0;
-    uint8_t keyIndex = 0;
-    uint8_t heldKeys[6] = {HID_KEY_NONE, HID_KEY_NONE, HID_KEY_NONE,
-                            HID_KEY_NONE, HID_KEY_NONE, HID_KEY_NONE};
+    kb::ScanReport report;
 
-    /** Before scanning check if any of the bad keys have been pressed in the 
-     * past period and if so preemptively add them to the report. */
-    for (auto key : bad_keys)
+    /** Before scanning check if any of the bad keys have been pressed in the
+     *  past period and if so preemptively add them to the report. */
+    for (auto key : kb::bad_keys)
     {
       auto now = time_us_32();
-      /* Handle the case when the time wraps over, set the last key presses to 0 
-      and wait for the debounce delay to pass before checking again. */
-      if (now < BAD_KEY_DEBOUNCE_DELAY_US) {
+      /* Handle the case when the time wraps over, set the last key presses to 0
+       * and wait for the debounce delay to pass before checking again. */
+      if (now < BAD_KEY_DEBOUNCE_DELAY_US)
+      {
         last_bad_key_press[key] = 0;
         continue;
       }
 
       if ((now - last_bad_key_press.at(key)) < BAD_KEY_DEBOUNCE_DELAY_US)
       {
-        heldKeys[keyIndex++] = key;
-        anyKeyHeld = true;
+        kb::add_key(report, key);
       }
     }
 
-    /** Now we can do the scanning. Set the column being scanned to LOW
-     * and then check the rows to see if any are LOW. If they are, then
-     * we know that the key at that row and column is pressed. */
-    for (int col = 0; col < colPins.size(); col++)
+    /** Scan the matrix. Pull the column being scanned LOW and check each row;
+     *  a LOW row means the key at that row and column is pressed. */
+    for (size_t col = 0; col < kb::colPins.size(); col++)
     {
-      /** Pulling the column being scanned low */
-      gpio_put(colPins[col], LOW);
-      for (int row = 0; row < rowPins.size(); row++)
+      gpio_put(kb::colPins[col], LOW);
+      for (size_t row = 0; row < kb::rowPins.size(); row++)
       {
         sleep_us(GPIO_PIN_SETTLE_DELAY_US);
-        if (gpio_get(rowPins[row]) == LOW)
+        if (gpio_get(kb::rowPins[row]) == LOW)
         {
-          uint8_t key = keyMap.at(col).at(row);
-          anyKeyHeld = anyKeyHeld || (key != FN_KEY);
+          uint8_t key = kb::lookup_key(col, row);
 
-          if (last_bad_key_press.contains(key)){
+          if (kb::is_bad_key(key))
+          {
             last_bad_key_press[key] = time_us_32();
           }
 
-          if (key == FN_KEY)
-          {
-            /** As far as the pc is concerned the Fn key doesn't exist. */
-            fnKeyHeld = true;
-            continue;
-          }
-
-          if (MODIFIER_KEY_LOWER <= key && key <= MODIFIER_KEY_UPPER)
-          {
-            /** Modifier keys are controlled by a bit string and we can get the
-             * bit position by subtracting 0xE0 */
-            modifiers_held |= (1 << (key - MODIFIER_KEY_LOWER));
-          }
-          /** Check if we have hit the max number of key we can send in a single
-           *  report and if so we can just break through the rest of the
-           *  loops */
-          if (keyIndex == 6){ break; }
-          heldKeys[keyIndex++] = key;
+          kb::add_key(report, key);
         }
       }
-      /** setting the column we just scanned back to high and let tud task run */
-      gpio_put(colPins[col], HIGH);
+      /** Setting the column we just scanned back to high and let tud task run */
+      gpio_put(kb::colPins[col], HIGH);
       tud_task();
     }
 
-    /** used to track if we previously sent a key report */
+    /** Track if we previously sent a key report, so a release can clear it. */
     static bool hasKeyboardKey = false;
-    if (anyKeyHeld)
-    {
-      /** if the fn key is held down then we should map the keys to their
-       *  fn key mappings, if a fn map doesn't exist don't change it */
-      if (fnKeyHeld)
-      {
-        for (int i = 0; i < 6; i++)
-        {
-          if (fn_transforms.contains(heldKeys[i]))
-          {
-            const auto transformed = fn_transforms.at(heldKeys[i]);
-            if ( transformed == HID_USAGE_CONSUMER_SCAN_NEXT ||
-                 transformed == HID_USAGE_CONSUMER_SCAN_PREVIOUS ||
-                 transformed == HID_USAGE_CONSUMER_PLAY_PAUSE )
-            {
-              static uint16_t previous_media_key_held = 0;
-              uint8_t report[2] = {
-                (uint8_t)(transformed & 0xFF),
-                (uint8_t)((transformed >> 8) & 0xFF)
-              };
 
-              /* Immediately send a empty report to turn off the key
-              This will break some games detecting if media keys are being pressed
-              but if a key is doing that... no. */
-              tud_hid_report(REPORT_ID_CONSUMER_CONTROL, report, sizeof(report));
-              hasKeyboardKey = true;
-              break;
-            }
-            else
-            {
-              heldKeys[i] = (uint8_t)transformed;
-            }
-          }
-          else
-          {
-            /* Manual reboot button on Fn+Esc */
-            if (heldKeys[i] == HID_KEY_ESCAPE)
-            {
-              watchdog_reboot(0,0,0);
-            }
-          }
-        }
+    if (report.anyKeyHeld)
+    {
+      const bool consumer = kb::resolve_fn_layer(report);
+
+      /* Manual reboot button on Fn+Esc */
+      if (report.rebootRequested)
+      {
+        watchdog_reboot(0, 0, 0);
       }
-      tud_hid_keyboard_report(REPORT_ID_KEYBOARD, modifiers_held, heldKeys);
+
+      if (consumer)
+      {
+        uint8_t report_bytes[2] = {
+            (uint8_t)(report.consumerUsage & 0xFF),
+            (uint8_t)((report.consumerUsage >> 8) & 0xFF)};
+        tud_hid_report(REPORT_ID_CONSUMER_CONTROL, report_bytes, sizeof(report_bytes));
+      }
+
+      tud_hid_keyboard_report(REPORT_ID_KEYBOARD, report.modifiers, report.heldKeys);
       hasKeyboardKey = true;
     }
     else
     {
-      /** send empty key report if previously has key pressed and all keys have
-       * been released now */
+      /** Send empty reports if a scan previously had keys and they have all
+       *  now been released. */
       if (hasKeyboardKey)
       {
         tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, NULL);
-        uint8_t empty_report[2] = { 0x00, 0x00 };
-        while(!tud_hid_ready()){
-          tud_task();
-        }
-        tud_hid_report(REPORT_ID_CONSUMER_CONTROL, empty_report, sizeof(empty_report));
+        flush_empty_consumer_report();
       }
       hasKeyboardKey = false;
     }
@@ -359,7 +271,7 @@ void key_scan(void)
 }
 
 /** Invoked when received SET_REPORT control request or
- * received data on OUT endpoint ( Report ID = 0, Type = 0 ) */
+ *  received data on OUT endpoint ( Report ID = 0, Type = 0 ) */
 void tud_hid_set_report_cb(
     uint8_t instance,
     uint8_t report_id,
@@ -377,18 +289,16 @@ void tud_hid_set_report_cb(
       if (bufsize < 1)
         return;
 
-        uint8_t const kbd_leds = buffer[0];
-        
-      /** Turn on the on board light if caplock is active. */
+      uint8_t const kbd_leds = buffer[0];
+
+      /** Turn on the on board light if capslock is active. */
       if (kbd_leds & KEYBOARD_LED_CAPSLOCK)
       {
-        // board_led_write(true);
         gpio_put(BOARD_LED_GPIO, HIGH);
         gpio_put(CAPSLOCK_LED, HIGH);
       }
       else
       {
-        // board_led_write(false);
         gpio_put(BOARD_LED_GPIO, LOW);
         gpio_put(CAPSLOCK_LED, LOW);
       }
